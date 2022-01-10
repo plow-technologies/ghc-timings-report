@@ -37,14 +37,15 @@ import Text.Blaze (Markup)
 import Text.Blaze.Renderer.Utf8 (renderMarkupToByteStringIO)
 import Prelude hiding (mapM_, print)
 import qualified Prelude
+import Data.Text.Lazy.Builder.RealFloat (formatRealFloat, FPFormat (Fixed))
 
 main :: IO ()
 main = do
-  [dir] <- getArgs
+  dir <- Prelude.head <$> getArgs
   createDirectoryIfMissing True "./tmp"
 
   files <- findDumpTimings dir
-
+  
   let ( files_failed,
         files_parsed)
         = partitionEithers $ files <&> \srcFilePath ->
@@ -114,7 +115,7 @@ main = do
       $ Report.packageTable package headers rows
     let bs = Csv.encodeHeader (V.fromList ("module": "total": Prelude.map T.encodeUtf8 headers))
              <> mconcat (Prelude.map Csv.encodeRecord
-               [ Prelude.map T.encodeUtf8 $ T.pack (joinPath modulePath):(showt total):Prelude.map showt cols
+               [ Prelude.map T.encodeUtf8 $ T.pack (packageName <> "_" <> joinPath modulePath):(toReadableText $ Just total):Prelude.map toReadableText cols
                | (GhcFile{..}, total, cols) <- rows
                ])
     BSL.writeFile (output </> package <.> "csv")
@@ -126,6 +127,8 @@ main = do
   copyFile "files/main.css" "./tmp/main.css" -- TODO use data files
   where
     output = "./tmp"
+    toReadableText :: Maybe Double -> T.Text
+    toReadableText = toText . formatRealFloat Fixed (Just 2) . fromMaybe 0 
 
 -- | Find all files that are related to the dump timings.
 --
