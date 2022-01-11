@@ -38,6 +38,7 @@ import Text.Blaze.Renderer.Utf8 (renderMarkupToByteStringIO)
 import Prelude hiding (mapM_, print)
 import qualified Prelude
 import Data.Text.Lazy.Builder.RealFloat (formatRealFloat, FPFormat (Fixed))
+import qualified Data.ByteString.Char8 as B8
 
 main :: IO ()
 main = do
@@ -45,7 +46,7 @@ main = do
   createDirectoryIfMissing True "./tmp"
 
   files <- findDumpTimings dir
-  
+
   let ( files_failed,
         files_parsed)
         = partitionEithers $ files <&> \srcFilePath ->
@@ -92,14 +93,15 @@ main = do
         [ (packageName, Map.singleton GhcFile{..} steps)
         | (GhcFile{..}, steps) <- results
         ]
+  let headers = getAllPhaseName $ Prelude.concatMap snd results --Prelude.concatMap Map.elems $ Map.elems
+
+  BSL.writeFile (output </> "allpackages" <.> "csv") $ Builder.toLazyByteString $
+    Csv.encodeHeader (V.fromList ("package": "module": "total": Prelude.map T.encodeUtf8 headers))
+
   -- FIXME: put this file back later
   -- encodeFile (output </> "stats_by_package" <.> "json") stats_by_package
   for_ (Map.toList stats_by_package) $ \(package, stat) -> do
-    let headers = Set.toList $ Set.fromList
-           [ phaseName
-           | (_, steps) <- Map.toList stat
-           , Phase{..} <- steps
-           ]
+
     let rows = [ ( GhcFile{..}
                  , total
                  , Prelude.map (\n -> Map.lookup n by_phase) headers)
@@ -113,11 +115,14 @@ main = do
                ]
     mkHtmlFile ("./tmp/" <> package <> ".html")
       $ Report.packageTable package headers rows
+
+    let csvLines = fmap toCsvLine rows
     let bs = Csv.encodeHeader (V.fromList ("module": "total": Prelude.map T.encodeUtf8 headers))
-             <> mconcat (Prelude.map Csv.encodeRecord
-               [ Prelude.map T.encodeUtf8 $ T.pack (packageName <> "_" <> joinPath modulePath):(toReadableText $ Just total):Prelude.map toReadableText cols
-               | (GhcFile{..}, total, cols) <- rows
-               ])
+             <> mconcat (fmap Csv.encodeRecord csvLines)
+             
+    BSL.appendFile (output </> "allpackages" <.> "csv")
+      $ Builder.toLazyByteString $ mconcat $ fmap Csv.encodeRecord $ fmap (\xs -> B8.pack package : xs) csvLines
+
     BSL.writeFile (output </> package <.> "csv")
        $ Builder.toLazyByteString bs
   -- Prelude.print byPackage
@@ -127,8 +132,13 @@ main = do
   copyFile "files/main.css" "./tmp/main.css" -- TODO use data files
   where
     output = "./tmp"
-    toReadableText :: Maybe Double -> T.Text
-    toReadableText = toText . formatRealFloat Fixed (Just 2) . fromMaybe 0 
+
+toReadableText :: Maybe Double -> T.Text
+toReadableText = toText . formatRealFloat Fixed (Just 2) . fromMaybe 0
+
+toCsvLine :: (GhcFile, Double, [Maybe Double]) -> [B.ByteString]
+toCsvLine (GhcFile {..}, total, cols) = fmap T.encodeUtf8 $ T.pack (joinPath modulePath) : toReadableText (Just total) : Prelude.map toReadableText cols
+
 
 -- | Find all files that are related to the dump timings.
 --
@@ -147,3 +157,6 @@ mkHtmlFile fn markup = do
   renderMarkupToByteStringIO
     (B.appendFile fn) -- TODO: keep handle opened instead of reopening each time.
     markup
+
+getAllPhaseName :: [Phase] -> [T.Text]
+getAllPhaseName = Set.toList . Set.fromList . fmap phaseName
